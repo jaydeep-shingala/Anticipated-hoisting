@@ -1,0 +1,1996 @@
+From 5de45d1284161bf425ad865912d581019bb6e99e Mon Sep 17 00:00:00 2001
+From: jaydeep-shingala <shingalajaydeep1508@gmail.com>
+Date: Mon, 13 Mar 2023 17:56:03 +0530
+Subject: [PATCH] Added Anticipated Expression Hoisting Pass
+
+---
+ ...-fsanitize-shadow-call-stack-for-Fuc.patch |  49 ++
+ ReadMe_Jaydeep.md                             |  36 +
+ .../llvm/Transforms/Utils/Anticipated.h       |  15 +
+ llvm/lib/Passes/PassBuilder.cpp               |   1 +
+ llvm/lib/Passes/PassRegistry.def              |   1 +
+ llvm/lib/Transforms/Utils/Anticipated.cpp     | 674 ++++++++++++++++++
+ llvm/lib/Transforms/Utils/CMakeLists.txt      |   1 +
+ .../HoistAnticipatedExpressionsTest.ll        | 350 +++++++++
+ .../AnticipatedExpressions/test_all.ll        | 353 +++++++++
+ .../test_for_loop_invariant_expr.ll           |  28 +
+ .../test_if_else_math_call.ll                 |  59 ++
+ .../test_if_else_memory.ll                    |  43 ++
+ .../test_if_else_multiple_redundant_exprs.ll  |  34 +
+ .../test_not_anticipated_for_loop.ll          |  25 +
+ .../test_not_anticipated_switch.ll            |  36 +
+ .../test_simple_if_else.ll                    |  31 +
+ .../test_simple_if_else_multiple.ll           |  42 ++
+ .../AnticipatedExpressions/test_switch.ll     |  41 ++
+ 18 files changed, 1819 insertions(+)
+ create mode 100644 0001-RISCV-Default-to-fsanitize-shadow-call-stack-for-Fuc.patch
+ create mode 100644 ReadMe_Jaydeep.md
+ create mode 100644 llvm/include/llvm/Transforms/Utils/Anticipated.h
+ create mode 100644 llvm/lib/Transforms/Utils/Anticipated.cpp
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/HoistAnticipatedExpressionsTest.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_all.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_for_loop_invariant_expr.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_if_else_math_call.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_if_else_memory.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_if_else_multiple_redundant_exprs.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_for_loop.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_switch.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else_multiple.ll
+ create mode 100644 llvm/test/Transforms/AnticipatedExpressions/test_switch.ll
+
+diff --git a/0001-RISCV-Default-to-fsanitize-shadow-call-stack-for-Fuc.patch b/0001-RISCV-Default-to-fsanitize-shadow-call-stack-for-Fuc.patch
+new file mode 100644
+index 000000000000..ebcc1db12a92
+--- /dev/null
++++ b/0001-RISCV-Default-to-fsanitize-shadow-call-stack-for-Fuc.patch
+@@ -0,0 +1,49 @@
++From f08d86fc7f4479d5f44d75c720201334682075b8 Mon Sep 17 00:00:00 2001
++From: Roland McGrath <mcgrathr@google.com>
++Date: Sun, 5 Feb 2023 18:15:10 -0800
++Subject: [PATCH] [RISCV] Default to -fsanitize=shadow-call-stack for Fuchsia
++
++The ShadowCallStack is the preferred and default ABI for Fuchsia.
++
++Reviewed By: phosek
++
++Differential Revision: https://reviews.llvm.org/D143357
++---
++ clang/lib/Driver/ToolChains/Fuchsia.cpp | 2 +-
++ clang/test/Driver/fuchsia.c             | 1 +
++ 2 files changed, 2 insertions(+), 1 deletion(-)
++
++diff --git a/clang/lib/Driver/ToolChains/Fuchsia.cpp b/clang/lib/Driver/ToolChains/Fuchsia.cpp
++index d0e035f205ae..36bd93a4913c 100644
++--- a/clang/lib/Driver/ToolChains/Fuchsia.cpp
+++++ b/clang/lib/Driver/ToolChains/Fuchsia.cpp
++@@ -466,13 +466,13 @@ SanitizerMask Fuchsia::getDefaultSanitizers() const {
++   SanitizerMask Res;
++   switch (getTriple().getArch()) {
++   case llvm::Triple::aarch64:
+++  case llvm::Triple::riscv64:
++     Res |= SanitizerKind::ShadowCallStack;
++     break;
++   case llvm::Triple::x86_64:
++     Res |= SanitizerKind::SafeStack;
++     break;
++   default:
++-    // TODO: Enable SafeStack on RISC-V once tested.
++     break;
++   }
++   return Res;
++diff --git a/clang/test/Driver/fuchsia.c b/clang/test/Driver/fuchsia.c
++index a8bae5f65541..c785e3a52251 100644
++--- a/clang/test/Driver/fuchsia.c
+++++ b/clang/test/Driver/fuchsia.c
++@@ -31,6 +31,7 @@
++ // CHECK: "-isysroot" "[[SYSROOT:[^"]+]]"
++ // CHECK: "-internal-externc-isystem" "[[SYSROOT]]{{/|\\\\}}include"
++ // CHECK-AARCH64: "-fsanitize=shadow-call-stack"
+++// CHECK-RISCV64: "-fsanitize=shadow-call-stack"
++ // CHECK-X86_64: "-fsanitize=safe-stack"
++ // CHECK: "-stack-protector" "2"
++ // CHECK-AARCH64: "-target-feature" "+outline-atomics"
++-- 
++2.17.1
++
+diff --git a/ReadMe_Jaydeep.md b/ReadMe_Jaydeep.md
+new file mode 100644
+index 000000000000..a13733704ea6
+--- /dev/null
++++ b/ReadMe_Jaydeep.md
+@@ -0,0 +1,36 @@
++# Compiler Design Assignment 1
++This Assignment was intended to make one LLVM pass to find anticipated expressions in the code (from LLVM IR) and then hoist those anticipated expressions.
++
++# Anticipated Expressions
++They are those expressions which are executed no matter what path the program takes.
++
++# hoisting
++Hoist anticipated expressions at the most upper common dominator means we hoist expression at the common path from start to those anticipated expressions but at the closest to the start node possible.
++
++# Algorithm
++We need USE, DEF, IN and OUT sets of the each basic block of each function to find anticipated expressions and hoist them.
++
++# step 1:
++we will find USE, and DEF sets of each basic block and store them along with their expressions. for that i have created one class blueprint for to save different kind of expressions.
++
++# step 2:
++after creating DEF, USE, we need to find IN and OUT sets of each basic blocks. those IN and OUT are sets of anticipated expressions at before basic block and sets of anticipated expressions at after basic blocks respectively. 
++
++# step 3:
++once we have all 4 sets, we have anticipated expressions. so we run algorithm to hoist those anticipated expressions.
++starting from start node for each basic block we traverse them in their Defth First Serach order to ensure that we have hoisted at highest possible hight (closer to start node). 
++
++# step 4:
++For each of basic block we take their IN and OUT sets and if any expressions are present at both IN and OUT then we hoist it at start of basic block becuase we do not have any defination of that expression in that basic block.
++if we have any expression present at end of basic block ( OUT SET ) but not in IN set so, we hoist them at end of current basic block.
++
++# step 5:
++after that we again use Depth First Traversal from current node and look for that expression in each of basic block and find if we have that expression present in that basic block to path then we replace all uses of that basic block and delete them. 
++
++# step 6:
++we repeate that process untill we have all zeros in OUT set. means no more anticipated expressions that can be hoisted.
++
++
++# Limitations:
++1. we can optimise the code for time, as i have used at many places bruetforce methods instead of optimised ones.
++2. i have ignored load and stores as of now in this pass.
+diff --git a/llvm/include/llvm/Transforms/Utils/Anticipated.h b/llvm/include/llvm/Transforms/Utils/Anticipated.h
+new file mode 100644
+index 000000000000..940a346c5225
+--- /dev/null
++++ b/llvm/include/llvm/Transforms/Utils/Anticipated.h
+@@ -0,0 +1,15 @@
++#ifndef LLVM_TRANSFORMS_UTILS_ANTICIPATED_H
++#define LLVM_TRANSFORMS_UTILS_ANTICIPATED_H
++
++#include "llvm/IR/PassManager.h"
++
++namespace llvm {
++
++class AnticipatedPass : public PassInfoMixin<AnticipatedPass> {
++public:
++  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
++};
++
++} // namespace llvm
++
++#endif
+diff --git a/llvm/lib/Passes/PassBuilder.cpp b/llvm/lib/Passes/PassBuilder.cpp
+index 4b8754df7fb6..131c9ff8e778 100644
+--- a/llvm/lib/Passes/PassBuilder.cpp
++++ b/llvm/lib/Passes/PassBuilder.cpp
+@@ -223,6 +223,7 @@
+ #include "llvm/Transforms/Scalar/TailRecursionElimination.h"
+ #include "llvm/Transforms/Scalar/WarnMissedTransforms.h"
+ #include "llvm/Transforms/Utils/AddDiscriminators.h"
++#include "llvm/Transforms/Utils/Anticipated.h"
+ #include "llvm/Transforms/Utils/AssumeBundleBuilder.h"
+ #include "llvm/Transforms/Utils/BreakCriticalEdges.h"
+ #include "llvm/Transforms/Utils/CanonicalizeAliases.h"
+diff --git a/llvm/lib/Passes/PassRegistry.def b/llvm/lib/Passes/PassRegistry.def
+index 73ab87dd8823..348547f29a63 100644
+--- a/llvm/lib/Passes/PassRegistry.def
++++ b/llvm/lib/Passes/PassRegistry.def
+@@ -405,6 +405,7 @@ FUNCTION_PASS("transform-warning", WarnMissedTransformationsPass())
+ FUNCTION_PASS("tsan", ThreadSanitizerPass())
+ FUNCTION_PASS("memprof", MemProfilerPass())
+ FUNCTION_PASS("declare-to-assign", llvm::AssignmentTrackingPass())
++FUNCTION_PASS("hoist-anticipated-expressions",AnticipatedPass())
+ #undef FUNCTION_PASS
+ 
+ #ifndef FUNCTION_PASS_WITH_PARAMS
+diff --git a/llvm/lib/Transforms/Utils/Anticipated.cpp b/llvm/lib/Transforms/Utils/Anticipated.cpp
+new file mode 100644
+index 000000000000..ee784aeddb75
+--- /dev/null
++++ b/llvm/lib/Transforms/Utils/Anticipated.cpp
+@@ -0,0 +1,674 @@
++#include "llvm/Transforms/Utils/Anticipated.h"
++#include "llvm/ADT/BitVector.h"
++#include "llvm/ADT/DepthFirstIterator.h"
++#include "llvm/Analysis/LoopInfo.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/InstrTypes.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/IR/Type.h"
++#include "llvm/Pass.h"
++#include "llvm/Support/Casting.h"
++#include "llvm/Support/raw_ostream.h"
++#include <algorithm>
++#include <map>
++#include <queue>
++#include <set>
++#include <system_error>
++#include <typeinfo>
++#include <unordered_map>
++#include <unordered_set>
++
++using namespace std;
++using namespace llvm;
++
++class Single_Exprformate {
++public:
++  long long int Expression_ID;
++  Value *F_op;
++  Value *S_op;
++  Value *Single_instruction;
++  vector<Value *> Arg_List;
++  CmpInst::Predicate predicate;
++  Instruction::UnaryOps U_opcode;
++  Type *Func_Return_Type;
++  BasicBlock *This_BasicBlock;
++  long long int Ex_Type;
++  long long int Op_code;
++
++  Single_Exprformate() {}
++};
++
++// Check that two expression objects are same or not
++bool Compare_Objects(Single_Exprformate *expr, Single_Exprformate *itr) {
++  if (expr != NULL && itr != NULL) {
++    if (expr->Ex_Type == (itr)->Ex_Type) {
++      if (expr->Ex_Type == 2 && expr->F_op == (itr)->F_op &&
++          expr->S_op == (itr)->S_op && expr->Op_code == (itr)->Op_code) {
++        return true;
++      } else if (expr->Ex_Type == 3 && expr->F_op == (itr)->F_op &&
++                 expr->S_op == (itr)->S_op && expr->Op_code == (itr)->Op_code &&
++                 expr->predicate == (itr)->Op_code) {
++        return true;
++      } else if (expr->Ex_Type == 1 && expr->F_op == (itr)->F_op &&
++                 expr->Op_code == (itr)->Op_code) {
++        return true;
++      } else if (expr->Ex_Type == 6) {
++        vector<Value *> arg1, arg2;
++        arg1 = expr->Arg_List;
++        arg2 = itr->Arg_List;
++        if (dyn_cast<CallInst>(expr->Single_instruction) != NULL &&
++            dyn_cast<CallInst>(itr->Single_instruction)) {
++          CallInst *c1 = dyn_cast<CallInst>(expr->Single_instruction);
++          CallInst *c2 = dyn_cast<CallInst>(itr->Single_instruction);
++          Function *f1 = c1->getCalledFunction();
++          Function *f2 = c2->getCalledFunction();
++          if (c1->getCalledFunction() != c2->getCalledFunction()) {
++            return false;
++          } else if (f1->getReturnType() != f2->getReturnType()) {
++            return false;
++          } else if (arg1.size() != arg2.size()) {
++            return false;
++          } else {
++            for (unsigned i = 0; i < arg1.size(); i++) {
++              if (arg1[i] != arg2[i]) {
++                return false;
++              }
++            }
++          }
++        }
++
++        return true;
++
++      } else {
++        return false;
++      }
++    } else {
++      return false;
++    }
++  }
++
++  return false;
++}
++
++long long int Get_Inst_Type(Instruction &I) {
++
++  if (isa<UnaryInstruction>(I)) {
++    return 1;
++  }
++
++  else if (isa<ICmpInst>(I)) {
++    return 3;
++  } else if (isa<StoreInst>(I)) {
++    return 4;
++  } else if (isa<LoadInst>(I)) {
++    return 5;
++  } else if (isa<CallInst>(I)) {
++    return 6;
++  } else if (isa<PHINode>(I)) {
++    return 7;
++  } else if (I.isBinaryOp()) {
++    return 2;
++  } else {
++    return -1;
++  }
++}
++
++// Check for given expression is unique in Expr_MAP or not
++bool Is_Unique_Expr(
++    Single_Exprformate *expration,
++    unordered_map<long long int, Single_Exprformate *> &Expr_MAP) {
++  if (expration == NULL) {
++    return false;
++  }
++
++  for (auto itration : Expr_MAP) {
++    Single_Exprformate *tempexpr = itration.second;
++    if (Compare_Objects(expration, tempexpr) == true) {
++      return false;
++    }
++  }
++
++  return true;
++}
++
++// Compute ExpressionMap from Single_Exprformate Set
++void Generate_Expression_MAP(
++    Function &F,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> Expr_set,
++    unordered_map<long long int, Single_Exprformate *> &Expr_map) {
++  long long int count = 0;
++  for (auto &basicblock : F) {
++    for (auto Iteration = Expr_set[&basicblock].begin();
++         Iteration != Expr_set[&basicblock].end(); Iteration++) {
++      if (Is_Unique_Expr(*Iteration, Expr_map)) {
++        Expr_map[count] = *Iteration;
++        count++;
++      }
++    }
++  }
++}
++
++void Generate_Expression_SET(
++    Function &F,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>>
++        &Expr_SET) {
++  for (auto &basicblock : F) {
++    unordered_set<Single_Exprformate *> Expr;
++    for (auto &I : basicblock) {
++      long long int typeofinst = Get_Inst_Type(I);
++      if (typeofinst == 1) {
++        Single_Exprformate *temp_expr = new Single_Exprformate();
++        temp_expr->F_op = I.getOperand(0);
++        temp_expr->S_op = NULL;
++        temp_expr->Op_code = I.getOpcode();
++        temp_expr->U_opcode = static_cast<Instruction::UnaryOps>(
++            cast<UnaryInstruction>(I).getOpcode());
++        temp_expr->Single_instruction = &I;
++        temp_expr->This_BasicBlock = &basicblock;
++        temp_expr->Ex_Type = typeofinst;
++        Expr.insert(temp_expr);
++      } else if (typeofinst == 2) {
++        Single_Exprformate *temp_expr = new Single_Exprformate();
++        temp_expr->F_op = I.getOperand(0);
++        temp_expr->S_op = I.getOperand(1);
++        temp_expr->Op_code = I.getOpcode();
++        temp_expr->Single_instruction = &I;
++        temp_expr->This_BasicBlock = &basicblock;
++        temp_expr->Ex_Type = typeofinst;
++        Expr.insert(temp_expr);
++      }
++
++      else if (typeofinst == 3) {
++        Single_Exprformate *temp_expr = new Single_Exprformate();
++        temp_expr->F_op = I.getOperand(0);
++        temp_expr->S_op = I.getOperand(1);
++        temp_expr->Op_code = I.getOpcode();
++        temp_expr->predicate = cast<ICmpInst>(I).getPredicate();
++        temp_expr->Single_instruction = &I;
++        temp_expr->This_BasicBlock = &basicblock;
++        temp_expr->Ex_Type = typeofinst;
++        Expr.insert(temp_expr);
++      } else if (typeofinst == 6) {
++        Single_Exprformate *temp_expr = new Single_Exprformate();
++        CallInst *Call_Inst = (CallInst *)&I;
++        Function *Funct = Call_Inst->getCalledFunction();
++        for (unsigned k = 0; k < Funct->arg_size(); k++) {
++          temp_expr->Arg_List.push_back(Call_Inst->getArgOperand(k));
++        }
++        temp_expr->Func_Return_Type = Funct->getReturnType();
++        temp_expr->Op_code = I.getOpcode();
++        temp_expr->Single_instruction = Call_Inst;
++        temp_expr->This_BasicBlock = &basicblock;
++        temp_expr->Ex_Type = typeofinst;
++        Expr.insert(temp_expr);
++      }
++
++      Expr_SET[&basicblock] = Expr;
++    }
++  }
++}
++
++// Exressions are same or not
++bool Is_same_Expr(Single_Exprformate *Expression1,
++                  Single_Exprformate *Expression2) {
++  if (Expression1 != NULL && Expression2 != NULL &&
++      (Expression1)->Ex_Type == (Expression2)->Ex_Type) {
++    if ((Expression2)->Ex_Type == 2 && Expression1->F_op == Expression2->F_op &&
++        Expression1->S_op == Expression2->S_op &&
++        Expression1->Op_code == Expression2->Op_code) {
++      return true;
++    } else if ((Expression2)->Ex_Type == 3 &&
++               Expression1->F_op == Expression2->F_op &&
++               Expression1->S_op == Expression2->S_op &&
++               Expression1->Op_code == Expression2->Op_code &&
++               Expression1->predicate == Expression2->predicate) {
++      return true;
++    } else if ((Expression2)->Ex_Type == 1 &&
++               (Expression1)->Ex_Type == (Expression2)->Ex_Type &&
++               Expression1->F_op == Expression2->F_op &&
++               Expression1->Op_code == Expression2->Op_code) {
++      return true;
++    } else if (Expression2->Ex_Type == 6) {
++      vector<Value *> arg1, arg2;
++      arg1 = Expression1->Arg_List;
++      arg2 = Expression2->Arg_List;
++      if (dyn_cast<CallInst>(Expression1->Single_instruction) != NULL &&
++          dyn_cast<CallInst>(Expression2->Single_instruction)) {
++        CallInst *c1 = dyn_cast<CallInst>(Expression1->Single_instruction);
++        CallInst *c2 = dyn_cast<CallInst>(Expression2->Single_instruction);
++        Function *f1 = c1->getCalledFunction();
++        Function *f2 = c2->getCalledFunction();
++        if (c1->getCalledFunction() != c2->getCalledFunction()) {
++          return false;
++        } else if (f1->getReturnType() != f2->getReturnType()) {
++          return false;
++        } else if (arg1.size() != arg2.size()) {
++          return false;
++        } else {
++          for (unsigned i = 0; i < arg1.size(); i++) {
++            if (arg1[i] != arg2[i]) {
++              return false;
++            }
++          }
++        }
++      }
++
++      return true;
++    }
++  }
++
++  return false;
++}
++
++// Compute the USE_Expressions set for each basic block
++void Generate_Use_SET(
++    Function &F,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>>
++        &USE_Expressions,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> Expr_SET,
++    unordered_map<BasicBlock *, BitVector> &USE_vectorbits,
++    unordered_map<long long int, Single_Exprformate *> Expr_MAP) {
++  for (BasicBlock &basicblock : F) {
++    BitVector tempbitvector(Expr_MAP.size(), 0);
++    USE_vectorbits[&basicblock] = tempbitvector;
++  }
++
++  for (auto &basicblock : F) {
++    unordered_set<Single_Exprformate *> Expr = Expr_SET[&basicblock];
++    unordered_set<Single_Exprformate *> expressionsWithNoPriorDefinition;
++    for (auto itr = Expr.begin(); itr != Expr.end(); itr++) {
++      if ((*itr)->Ex_Type == 2 || (*itr)->Ex_Type == 3) {
++        Value *F_op = (*itr)->F_op;
++        Value *S_op = (*itr)->S_op;
++        bool flag1 = false;
++        bool flag2 = false;
++        if (F_op != NULL && S_op != NULL) {
++          if (dyn_cast<Instruction>(F_op) == NULL &&
++              dyn_cast<Instruction>(S_op) == NULL) {
++            flag1 = true;
++            flag2 = true;
++          } else if (dyn_cast<Instruction>(F_op) != NULL &&
++                     dyn_cast<Instruction>(S_op) != NULL &&
++                     dyn_cast<Instruction>(F_op)->getParent() != &basicblock &&
++                     dyn_cast<Instruction>(S_op)->getParent() != &basicblock) {
++            flag1 = true;
++            flag2 = true;
++          } else if (dyn_cast<Instruction>(F_op) != NULL &&
++                     dyn_cast<Instruction>(S_op) == NULL &&
++                     dyn_cast<Instruction>(F_op)->getParent() != &basicblock) {
++            flag1 = true;
++            flag2 = true;
++          } else if (dyn_cast<Instruction>(F_op) == NULL &&
++                     dyn_cast<Instruction>(S_op) != NULL &&
++                     dyn_cast<Instruction>(S_op)->getParent() != &basicblock) {
++            flag1 = true;
++            flag2 = true;
++          }
++        }
++
++        if (flag1 && flag2) {
++          expressionsWithNoPriorDefinition.insert(*itr);
++
++          for (auto &it : Expr_MAP) {
++            if (Is_same_Expr(it.second, *itr)) {
++              USE_vectorbits[&basicblock][it.first] = 1;
++              break;
++            }
++          }
++        }
++      } else if ((*itr)->Ex_Type == 1) {
++        Value *F_op = (*itr)->F_op;
++        bool flag1 = false;
++        if (F_op != NULL) {
++          if (dyn_cast<Instruction>(F_op) == NULL) {
++            flag1 = true;
++          } else if (dyn_cast<Instruction>(F_op) != NULL &&
++                     dyn_cast<Instruction>(F_op)->getParent() != &basicblock) {
++            flag1 = true;
++          }
++        }
++
++        if (flag1) {
++          expressionsWithNoPriorDefinition.insert(*itr);
++          for (auto &it : Expr_MAP) {
++            if (Is_same_Expr(it.second, *itr)) {
++              USE_vectorbits[&basicblock][it.first] = 1;
++              break;
++            }
++          }
++        }
++      } else if ((*itr)->Ex_Type == 6) {
++        vector<Value *> arguments = (*itr)->Arg_List;
++        bool flag = true;
++
++        for (auto it = arguments.begin(); it != arguments.end(); it++) {
++          if (dyn_cast<Instruction>(*it) != NULL &&
++              dyn_cast<Instruction>(*it)->getParent() == &basicblock) {
++            flag = false;
++          }
++        }
++
++        if (flag) {
++          expressionsWithNoPriorDefinition.insert(*itr);
++          for (auto &it : Expr_MAP) {
++            if (Is_same_Expr(it.second, *itr)) {
++              USE_vectorbits[&basicblock][it.first] = 1;
++              break;
++            }
++          }
++        }
++      }
++    }
++
++    USE_Expressions[&basicblock] = expressionsWithNoPriorDefinition;
++  }
++}
++
++// Compute the DEF set for each basic block
++void Generate_Def_SET(
++    Function &F,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> &DEF,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> Expr_SET,
++    unordered_map<BasicBlock *, BitVector> &DEF_SET,
++    unordered_map<long long int, Single_Exprformate *> Expr_MAP) {
++  for (BasicBlock &basicblock : F) {
++    BitVector tempbitvector(Expr_MAP.size(), 0);
++    DEF_SET[&basicblock] = tempbitvector;
++  }
++
++  for (BasicBlock &basicblock : F) {
++    unordered_set<Single_Exprformate *> Expressions = Expr_SET[&basicblock];
++    for (auto itr = Expressions.begin(); itr != Expressions.end(); itr++) {
++      if ((**itr).Ex_Type == 2 || (**itr).Ex_Type == 3) {
++        Value *F_op = (*itr)->F_op;
++        Value *S_op = (*itr)->S_op;
++
++        BasicBlock *tempblock;
++        BasicBlock *tempblock2;
++        if (F_op != NULL) {
++          tempblock = dyn_cast<Instruction>(F_op) != NULL
++                          ? dyn_cast<Instruction>(F_op)->getParent()
++                          : NULL;
++        }
++
++        if (S_op != NULL) {
++          tempblock2 = dyn_cast<Instruction>(S_op) != NULL
++                           ? dyn_cast<Instruction>(S_op)->getParent()
++                           : NULL;
++        }
++
++        // errs()<<"DefSet Calcuation\n";
++        long long int exprIndex;
++        for (auto &it : Expr_MAP) {
++          if (Is_same_Expr(it.second, *itr)) {
++            exprIndex = it.first;
++          }
++        }
++
++        if (tempblock != NULL) {
++          DEF[tempblock].insert(*itr);
++          DEF_SET[tempblock][exprIndex] = 1;
++        }
++
++        if (tempblock2 != NULL) {
++          DEF[tempblock2].insert(*itr);
++          DEF_SET[tempblock2][exprIndex] = 1;
++        }
++      } else if ((**itr).Ex_Type == 1) {
++        Value *F_op = (*itr)->F_op;
++
++        BasicBlock *tempblock;
++        if (F_op != NULL) {
++          tempblock = dyn_cast<Instruction>(F_op) != NULL
++                          ? dyn_cast<Instruction>(F_op)->getParent()
++                          : NULL;
++        }
++
++        // errs()<<"DefSet Calcuation\n";
++        long long int exprIndex;
++        for (auto &it : Expr_MAP) {
++          if (Is_same_Expr(it.second, *itr)) {
++            exprIndex = it.first;
++          }
++        }
++
++        if (tempblock != NULL) {
++          DEF[tempblock].insert(*itr);
++          DEF_SET[tempblock][exprIndex] = 1;
++        }
++      } else if ((**itr).Ex_Type == 6) {
++        vector<Value *> arguments = (*itr)->Arg_List;
++
++        long long int exprIndex;
++        for (auto &it : Expr_MAP) {
++          if (Is_same_Expr(it.second, *itr)) {
++            exprIndex = it.first;
++          }
++        }
++
++        for (auto it = arguments.begin(); it != arguments.end(); it++) {
++          BasicBlock *tempblock = dyn_cast<Instruction>(*it) != NULL
++                                      ? dyn_cast<Instruction>(*it)->getParent()
++                                      : NULL;
++
++          if (tempblock != NULL) {
++            DEF[tempblock].insert(*itr);
++            DEF_SET[tempblock][exprIndex] = 1;
++          }
++        }
++      }
++    }
++  }
++}
++
++// Initialize IN and OUT sets for each Basic Blcoks
++void Initialise_sets(
++    Function &F, unordered_map<BasicBlock *, BitVector> &IN_SET,
++    unordered_map<BasicBlock *, BitVector> &OUT_SET,
++    unordered_map<long long int, Single_Exprformate *> Expr_MAP) {
++  for (auto &basicblock : F) {
++    BitVector in(Expr_MAP.size(), 1);
++    IN_SET[&basicblock] = in;
++    BitVector out(Expr_MAP.size(), 0);
++    OUT_SET[&basicblock] = out;
++  }
++}
++
++// Calculate IN and OUT sets
++void Generate_IN_OUT_SETS(
++    Function &F, unordered_map<BasicBlock *, BitVector> &IN_SET,
++    unordered_map<BasicBlock *, BitVector> &OUT_SET,
++    unordered_map<BasicBlock *, BitVector> USE_vectorbits,
++    unordered_map<BasicBlock *, BitVector> DEF_SET,
++    unordered_map<long long int, Single_Exprformate *> Expr_MAP) {
++  // Iterate until a fixed point is reached
++  bool flag = true;
++  while (flag) {
++    flag = false;
++    for (auto &basicblock : F) {
++      BitVector IN = IN_SET[&basicblock];
++      BitVector OUT = OUT_SET[&basicblock];
++      BitVector USE_Expressions = USE_vectorbits[&basicblock];
++      BitVector DEF = DEF_SET[&basicblock];
++
++      if (!successors(&basicblock).empty()) {
++        OUT_SET[&basicblock] = IN_SET[*successors(&basicblock).begin()];
++        for (auto itr : successors(&basicblock)) {
++          OUT_SET[&basicblock] &= IN_SET[itr];
++        }
++      }
++
++      BitVector tempOut = OUT_SET[&basicblock];
++
++      tempOut &= DEF.flip();
++      DEF.flip();
++      IN_SET[&basicblock] = USE_Expressions;
++      IN_SET[&basicblock] |= tempOut;
++
++      if (IN_SET[&basicblock] != IN) {
++        flag = true;
++      }
++
++      if (OUT_SET[&basicblock] != OUT) {
++        flag = true;
++      }
++    }
++  }
++}
++
++// DataFlow Analysis of IN and OUT sets
++void create_IN_OUT_SETS(
++    Function &F, unordered_map<BasicBlock *, BitVector> &IN_SET,
++    unordered_map<BasicBlock *, BitVector> &OUT_SET,
++    unordered_map<BasicBlock *, BitVector> USE_vectorbits,
++    unordered_map<BasicBlock *, BitVector> DEF_SET,
++    unordered_map<long long int, Single_Exprformate *> Expr_MAP) {
++  Initialise_sets(F, IN_SET, OUT_SET, Expr_MAP);
++  Generate_IN_OUT_SETS(F, IN_SET, OUT_SET, USE_vectorbits, DEF_SET, Expr_MAP);
++}
++
++bool Hoisting_Anticipated_Expr(
++    Function &F, unordered_map<BasicBlock *, BitVector> IN_SET,
++    unordered_map<BasicBlock *, BitVector> OUT_SET,
++    unordered_map<BasicBlock *, BitVector> USE_vectorbits,
++    unordered_map<BasicBlock *, BitVector> DEF_SET,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> USE_I,
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> DEF_I,
++    unordered_map<long long int, Single_Exprformate *> Expr_MAP,
++    long long int &anticipatedname) {
++  bool tempflag = false;
++  list<BasicBlock *> dfsordertotraverse;
++  for (BasicBlock *basicblock : depth_first(&F.getEntryBlock())) {
++    dfsordertotraverse.push_back(basicblock);
++  }
++
++  for (auto basicblock : dfsordertotraverse) {
++    BitVector IN = IN_SET[basicblock];
++    BitVector OUT = OUT_SET[basicblock];
++    BitVector USE_Expressions = USE_vectorbits[basicblock];
++    BitVector DEF = DEF_SET[basicblock];
++
++    long long int ExpressionId = -1;
++    for (long long int i = 0; i < OUT.size(); i++) {
++      if (OUT[i] == 1) {
++        ExpressionId = i;
++        Single_Exprformate *expr = Expr_MAP[ExpressionId];
++        string instructionName = "newhoist" + to_string(anticipatedname++);
++        Instruction *newInstruction;
++        Instruction *insertPointer;
++
++        if (IN[i] == 1) {
++
++          insertPointer = &*basicblock->getFirstInsertionPt();
++
++        } else if (IN[i] == 0) {
++          insertPointer = (basicblock->getTerminator());
++        }
++
++        if (expr->Ex_Type == 2) {
++          BinaryOperator *bp;
++          newInstruction = bp->Create(
++              static_cast<llvm::Instruction::BinaryOps>(expr->Op_code),
++              expr->F_op, expr->S_op, instructionName, insertPointer);
++        } else if (expr->Ex_Type == 1) {
++          if (isa<CastInst>(expr->Single_instruction)) {
++            CastInst *cap;
++            newInstruction =
++                cap->Create(static_cast<Instruction::CastOps>(expr->Op_code),
++                            expr->F_op, (expr->Single_instruction)->getType(),
++                            instructionName, insertPointer);
++          } else if (isa<UnaryInstruction>(expr->Single_instruction)) {
++            if (expr->Op_code >= Instruction::UnaryOpsBegin &&
++                expr->Op_code <= Instruction::UnaryOpsEnd) {
++              UnaryOperator *up;
++              newInstruction = up->Create(expr->U_opcode, expr->F_op,
++                                          instructionName, insertPointer);
++            } else {
++              anticipatedname--;
++              continue;
++            }
++          }
++        } else if (expr->Ex_Type == 3) {
++          CmpInst *cp;
++          newInstruction = cp->Create(
++              static_cast<Instruction::OtherOps>(expr->Op_code),
++              static_cast<llvm::CmpInst::Predicate>(expr->predicate),
++              expr->F_op, expr->S_op, instructionName, insertPointer);
++
++        } else if (expr->Ex_Type == 6) {
++          CallInst *Call_Inst = (CallInst *)(expr->Single_instruction);
++          Function *Funct = Call_Inst->getCalledFunction();
++          CallInst *callp;
++          newInstruction =
++              callp->Create(Funct->getFunctionType(), Funct, expr->Arg_List,
++                            instructionName, insertPointer);
++        }
++
++        list<BasicBlock *> Seconordertotraverse;
++        for (BasicBlock *tempblocks : depth_first(basicblock)) {
++          Seconordertotraverse.push_back(tempblocks);
++        }
++
++        for (auto IB : Seconordertotraverse) {
++          BitVector IN_IB = IN_SET[IB];
++          BitVector OUT_IB = OUT_SET[IB];
++          BitVector USE_IB = USE_vectorbits[IB];
++          BitVector DEF_IB = DEF_SET[IB];
++          unordered_set<Single_Exprformate *> USE_Expressions = USE_I[IB];
++          if (USE_IB[ExpressionId] == 1) {
++            for (auto itr = USE_Expressions.begin();
++                 itr != USE_Expressions.end(); itr++) {
++              if (Is_same_Expr(expr, *itr)) {
++                Instruction *tempInstruction =
++                    dyn_cast<Instruction>((*itr)->Single_instruction);
++                if (tempInstruction != NULL) {
++                  tempInstruction->replaceAllUsesWith(newInstruction);
++                  tempInstruction->eraseFromParent();
++                  tempflag = true;
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++
++    if (OUT.count() == 0) {
++      continue;
++    } else {
++      break;
++    }
++  }
++  return tempflag;
++}
++
++PreservedAnalyses AnticipatedPass::run(Function &F,
++                                       FunctionAnalysisManager &AM) {
++  long long int anticipatedname = 0;
++  bool flag = false;
++  do {
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> Expr_SET;
++    unordered_map<long long int, Single_Exprformate *> Expr_MAP;
++    unordered_map<BasicBlock *, unordered_set<Single_Exprformate *>> IN, OUT,
++        USE_Expressions, DEF;
++    unordered_map<BasicBlock *, BitVector> IN_SET, OUT_SET, USE_vectorbits,
++        DEF_SET;
++
++    Generate_Expression_SET(F, Expr_SET);
++
++    Generate_Expression_MAP(F, Expr_SET, Expr_MAP);
++
++    Generate_Use_SET(F, USE_Expressions, Expr_SET, USE_vectorbits, Expr_MAP);
++
++    Generate_Def_SET(F, DEF, Expr_SET, DEF_SET, Expr_MAP);
++
++    create_IN_OUT_SETS(F, IN_SET, OUT_SET, USE_vectorbits, DEF_SET, Expr_MAP);
++
++    flag = Hoisting_Anticipated_Expr(F, IN_SET, OUT_SET, USE_vectorbits,
++                                     DEF_SET, USE_Expressions, DEF, Expr_MAP,
++                                     anticipatedname);
++
++  } while (flag);
++  return PreservedAnalyses::all();
++}
+diff --git a/llvm/lib/Transforms/Utils/CMakeLists.txt b/llvm/lib/Transforms/Utils/CMakeLists.txt
+index 6663ce6c4b0a..45612fedc6da 100644
+--- a/llvm/lib/Transforms/Utils/CMakeLists.txt
++++ b/llvm/lib/Transforms/Utils/CMakeLists.txt
+@@ -82,6 +82,7 @@ add_llvm_component_library(LLVMTransformUtils
+   Utils.cpp
+   ValueMapper.cpp
+   VNCoercion.cpp
++  Anticipated.cpp
+ 
+   ADDITIONAL_HEADER_DIRS
+   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/HoistAnticipatedExpressionsTest.ll b/llvm/test/Transforms/AnticipatedExpressions/HoistAnticipatedExpressionsTest.ll
+new file mode 100644
+index 000000000000..7576064a2a5a
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/HoistAnticipatedExpressionsTest.ll
+@@ -0,0 +1,350 @@
++; RUN: opt < %s -passes=hoist-anticipated-expressions -S | FileCheck %s
++attributes #0 = { nounwind uwtable "frame-pointer"="none" "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++
++attributes #2 = { nounwind "frame-pointer"="none" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++
++; metadata
++!3 = !{!4, !4, i64 0}
++!4 = !{!"int", !5, i64 0}
++!5 = !{!"omnipotent char", !6, i64 0}
++!6 = !{!"Simple C/C++ TBAA"}
++!7 = !{!8, !8, i64 0}
++!8 = !{!"any pointer", !5, i64 0}
++!9 = distinct !{!9, !10}
++!10 = !{!"llvm.loop.mustprogress"}
++
++; Generated from an if/else.
++
++; CHECK-LABEL: @simple_if_else
++define dso_local i32 @simple_if_else(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %12
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: %[[M:.*]] = mul i32
++  ; CHECK: add {{.*}} %[[M]]
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 5
++  br label %12
++
++12:                                               ; preds = %8, %4
++  %13 = phi i32 [ %7, %4 ], [ %11, %8 ]
++  ret i32 %13
++}
++
++; A multiple if/else if/else block with anticipated expressions.
++
++; CHECK-LABEL: @simple_if_else_multiple
++define dso_local i32 @simple_if_else_multiple(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %18
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = icmp ugt i32 %0, 2
++  br i1 %9, label %10, label %14
++
++10:                                               ; preds = %8
++  %11 = mul i32 %0, %0
++  %12 = add i32 %11, %0
++  %13 = add i32 %12, 5
++  br label %18
++
++14:                                               ; preds = %8
++  %15 = mul i32 %0, %0
++  %16 = add i32 %15, %0
++  %17 = add i32 %16, 5
++  br label %18
++
++18:                                               ; preds = %10, %14, %4
++  %19 = phi i32 [ %7, %4 ], [ %13, %10 ], [ %17, %14 ]
++  ret i32 %19
++}
++
++; No optimization needs to be performed on the memory form (it's okay to not
++; optimize and so we don't check anything here except that the pass shouldn't
++; crash on this.
++; CHECK: if_else_memory
++define dso_local i32 @if_else_memory(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = alloca i32, align 4
++  %4 = alloca i32, align 4
++  %5 = alloca ptr, align 8
++  %6 = alloca i32, align 4
++  store i32 0, ptr %3, align 4
++  store i32 %0, ptr %4, align 4
++  store ptr %1, ptr %5, align 8
++  %7 = load i32, ptr %4, align 4
++  store i32 %7, ptr %6, align 4
++  %8 = load i32, ptr %6, align 4
++  %9 = icmp ugt i32 %8, 2
++  br i1 %9, label %10, label %17
++
++10:                                               ; preds = %2
++  %11 = load i32, ptr %6, align 4
++  %12 = load i32, ptr %6, align 4
++  %13 = mul i32 %11, %12
++  %14 = load i32, ptr %6, align 4
++  %15 = add i32 %13, %14
++  %16 = add i32 %15, 5
++  store i32 %16, ptr %6, align 4
++  br label %24
++
++17:                                               ; preds = %2
++  %18 = load i32, ptr %6, align 4
++  %19 = load i32, ptr %6, align 4
++  %20 = mul i32 %18, %19
++  %21 = load i32, ptr %6, align 4
++  %22 = add i32 %20, %21
++  %23 = add i32 %22, 3
++  store i32 %23, ptr %6, align 4
++  br label %24
++
++24:                                               ; preds = %17, %10
++  %25 = load i32, ptr %6, align 4
++  ret i32 %25
++}
++
++; Generated from a simple for loop.
++
++; CHECK-LABEL: @for_loop_invariant_expr
++define dso_local i32 @for_loop_invariant_expr(i32 noundef %0, ptr noundef %1) #0 {
++  br label %3
++
++3:                                                ; preds = %9, %2
++  %4 = phi i32 [ 0, %2 ], [ %12, %9 ]
++  %5 = icmp ult i32 %4, 10
++  br i1 %5, label %9, label %6
++
++6:                                                ; preds = %3
++  %7 = mul nsw i32 %0, %0
++  %8 = srem i32 %7, %0
++  ret i32 %8
++
++9:                                                ; preds = %3
++  %10 = mul nsw i32 %0, %0
++  %11 = srem i32 %10, %0
++  %12 = add i32 %4, 1
++  br label %3
++  ; CHECK: %[[M:.*]] = mul
++  ; CHECK: srem i32 %[[M]], %{{.*}}
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: srem
++  ; CHECK: ret
++}
++
++; Generated from a switch statement.
++
++; CHECK: @switch
++define dso_local i32 @switch(i32 noundef %0, ptr noundef %1) #0 {
++  switch i32 %0, label %11 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %7
++    i32 3, label %7
++  ]
++
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++3:                                                ; preds = %2, %2
++  %4 = mul i32 %0, %0
++  %5 = add i32 %4, %0
++  %6 = add i32 %5, 3
++  br label %15
++
++7:                                                ; preds = %2, %2
++  %8 = mul i32 %0, %0
++  %9 = add i32 %8, %0
++  %10 = add i32 %9, 3
++  br label %15
++
++11:                                               ; preds = %2
++  %12 = mul i32 %0, %0
++  %13 = add i32 %12, %0
++  %14 = add i32 %13, 3
++  br label %15
++
++15:                                               ; preds = %11, %7, %3
++  %16 = phi i32 [ %14, %11 ], [ %10, %7 ], [ %6, %3 ]
++  ret i32 %16
++}
++
++; if/else with a math function call.
++
++attributes #3 = { nounwind }
++
++; Function Attrs: nounwind
++declare dso_local double @exp(double noundef) #2
++
++; Function Attrs: nounwind uwtable
++; CHECK: @if_else_math_call
++define dso_local i32 @if_else_math_call(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %12
++
++  ; CHECK: mul
++  ; CHECK: call double @exp
++  ; CHECK-NOT: call
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = uitofp i32 %5 to double
++  %7 = uitofp i32 %0 to double
++  %8 = call double @exp(double noundef %7) #3
++  %9 = fadd double %6, %8
++  %10 = fadd double %9, 5.000000e+00
++  %11 = fptoui double %10 to i32
++  br label %30
++
++12:                                               ; preds = %2
++  %13 = icmp ugt i32 %0, 2
++  br i1 %13, label %14, label %22
++
++14:                                               ; preds = %12
++  %15 = mul i32 %0, %0
++  %16 = uitofp i32 %15 to double
++  %17 = uitofp i32 %0 to double
++  %18 = call double @exp(double noundef %17) #3
++  %19 = fadd double %16, %18
++  %20 = fadd double %19, 3.000000e+00
++  %21 = fptoui double %20 to i32
++  br label %30
++
++22:                                               ; preds = %12
++  %23 = mul i32 %0, %0
++  %24 = uitofp i32 %23 to double
++  %25 = uitofp i32 %0 to double
++  %26 = call double @exp(double noundef %25) #3
++  %27 = fadd double %24, %26
++  %28 = fadd double %27, 1.000000e+00
++  %29 = fptoui double %28 to i32
++  br label %30
++
++30:                                               ; preds = %14, %22, %4
++  %31 = phi i32 [ %11, %4 ], [ %21, %14 ], [ %29, %22 ]
++  ret i32 %31
++}
++
++
++; if/else with multiple redundant expressions in the block.
++
++; Function Attrs: nounwind uwtable
++; CHECK-LABEL: @if_else_multiple_redundant_exprs
++define dso_local i32 @if_else_multiple_redundant_exprs(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %9
++
++  ; There should be only one mul left
++  ; CHECK: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  %8 = add i32 %7, 5
++  br label %14
++
++9:                                                ; preds = %2
++  %10 = mul i32 %0, %0
++  %11 = add i32 %10, %0
++  %12 = add i32 %11, 3
++  %13 = mul i32 %0, %0
++  br label %14
++
++14:                                               ; preds = %9, %4
++  %15 = phi i32 [ %8, %4 ], [ %13, %9 ]
++  %16 = phi i32 [ %7, %4 ], [ %12, %9 ]
++  %17 = add i32 %16, %15
++  ret i32 %17
++}
++
++; CHECK: @not_anticipated_for_loop
++define dso_local i32 @not_anticipated_for_loop(i32 noundef %0, ptr noundef %1) {
++  br label %3
++
++3:                                                ; preds = %8, %2
++  %4 = phi i32 [ undef, %2 ], [ %10, %8 ]
++  %5 = phi i32 [ 0, %2 ], [ %11, %8 ]
++  %6 = icmp ult i32 %5, 10
++  br i1 %6, label %8, label %7
++
++7:                                                ; preds = %3
++  ret i32 %4
++
++  ; CHECK: mul
++  ; CHECK-NEXT: srem
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: br label %{{.*}}, !llvm.loop
++
++8:                                                ; preds = %3
++  %9 = mul nsw i32 %0, %0
++  %10 = srem i32 %9, %0
++  %11 = add i32 %5, 1
++  br label %3, !llvm.loop !3
++}
++
++; Not anticipated expression here.
++; CHECK: @not_anticipated_switch
++define dso_local i32 @not_anticipated_switch(i32 noundef %0, ptr noundef %1) {
++  switch i32 %0, label %8 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %3
++  ]
++  ; CHECK: urem
++  ; CHECK-NEXT: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++
++  ; CHECK: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++3:                                                ; preds = %2, %2, %2
++  %4 = urem i32 %0, 2
++  %5 = mul i32 %4, %4
++  %6 = add i32 %5, %4
++  %7 = add i32 %6, 3
++  br label %12
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 2
++  br label %12
++
++12:                                               ; preds = %8, %3
++  %13 = phi i32 [ %11, %8 ], [ %7, %3 ]
++  ret i32 %13
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_all.ll b/llvm/test/Transforms/AnticipatedExpressions/test_all.ll
+new file mode 100644
+index 000000000000..ee2c73175b70
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_all.ll
+@@ -0,0 +1,353 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++
++attributes #0 = { nounwind uwtable "frame-pointer"="none" "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++
++attributes #2 = { nounwind "frame-pointer"="none" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++
++; metadata
++!3 = !{!4, !4, i64 0}
++!4 = !{!"int", !5, i64 0}
++!5 = !{!"omnipotent char", !6, i64 0}
++!6 = !{!"Simple C/C++ TBAA"}
++!7 = !{!8, !8, i64 0}
++!8 = !{!"any pointer", !5, i64 0}
++!9 = distinct !{!9, !10}
++!10 = !{!"llvm.loop.mustprogress"}
++
++; Generated from an if/else.
++
++; CHECK-LABEL: @simple_if_else
++define dso_local i32 @simple_if_else(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %12
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: %[[M:.*]] = mul i32
++  ; CHECK: add {{.*}} %[[M]]
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 5
++  br label %12
++
++12:                                               ; preds = %8, %4
++  %13 = phi i32 [ %7, %4 ], [ %11, %8 ]
++  ret i32 %13
++}
++
++; A multiple if/else if/else block with anticipated expressions.
++
++; CHECK-LABEL: @simple_if_else_multiple
++define dso_local i32 @simple_if_else_multiple(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %18
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = icmp ugt i32 %0, 2
++  br i1 %9, label %10, label %14
++
++10:                                               ; preds = %8
++  %11 = mul i32 %0, %0
++  %12 = add i32 %11, %0
++  %13 = add i32 %12, 5
++  br label %18
++
++14:                                               ; preds = %8
++  %15 = mul i32 %0, %0
++  %16 = add i32 %15, %0
++  %17 = add i32 %16, 5
++  br label %18
++
++18:                                               ; preds = %10, %14, %4
++  %19 = phi i32 [ %7, %4 ], [ %13, %10 ], [ %17, %14 ]
++  ret i32 %19
++}
++
++; No optimization needs to be performed on the memory form (it's okay to not
++; optimize and so we don't check anything here except that the pass shouldn't
++; crash on this.
++; CHECK: if_else_memory
++define dso_local i32 @if_else_memory(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = alloca i32, align 4
++  %4 = alloca i32, align 4
++  %5 = alloca ptr, align 8
++  %6 = alloca i32, align 4
++  store i32 0, ptr %3, align 4
++  store i32 %0, ptr %4, align 4
++  store ptr %1, ptr %5, align 8
++  %7 = load i32, ptr %4, align 4
++  store i32 %7, ptr %6, align 4
++  %8 = load i32, ptr %6, align 4
++  %9 = icmp ugt i32 %8, 2
++  br i1 %9, label %10, label %17
++
++10:                                               ; preds = %2
++  %11 = load i32, ptr %6, align 4
++  %12 = load i32, ptr %6, align 4
++  %13 = mul i32 %11, %12
++  %14 = load i32, ptr %6, align 4
++  %15 = add i32 %13, %14
++  %16 = add i32 %15, 5
++  store i32 %16, ptr %6, align 4
++  br label %24
++
++17:                                               ; preds = %2
++  %18 = load i32, ptr %6, align 4
++  %19 = load i32, ptr %6, align 4
++  %20 = mul i32 %18, %19
++  %21 = load i32, ptr %6, align 4
++  %22 = add i32 %20, %21
++  %23 = add i32 %22, 3
++  store i32 %23, ptr %6, align 4
++  br label %24
++
++24:                                               ; preds = %17, %10
++  %25 = load i32, ptr %6, align 4
++  ret i32 %25
++}
++
++; Generated from a simple for loop.
++
++; CHECK-LABEL: @for_loop_invariant_expr
++define dso_local i32 @for_loop_invariant_expr(i32 noundef %0, ptr noundef %1) #0 {
++  br label %3
++
++3:                                                ; preds = %9, %2
++  %4 = phi i32 [ 0, %2 ], [ %12, %9 ]
++  %5 = icmp ult i32 %4, 10
++  br i1 %5, label %9, label %6
++
++6:                                                ; preds = %3
++  %7 = mul nsw i32 %0, %0
++  %8 = srem i32 %7, %0
++  ret i32 %8
++
++9:                                                ; preds = %3
++  %10 = mul nsw i32 %0, %0
++  %11 = srem i32 %10, %0
++  %12 = add i32 %4, 1
++  br label %3
++  ; CHECK: %[[M:.*]] = mul
++  ; CHECK: srem i32 %[[M]], %{{.*}}
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: srem
++  ; CHECK: ret
++}
++
++; Generated from a switch statement.
++
++; CHECK: @switch
++define dso_local i32 @switch(i32 noundef %0, ptr noundef %1) #0 {
++  switch i32 %0, label %11 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %7
++    i32 3, label %7
++  ]
++
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++3:                                                ; preds = %2, %2
++  %4 = mul i32 %0, %0
++  %5 = add i32 %4, %0
++  %6 = add i32 %5, 3
++  br label %15
++
++7:                                                ; preds = %2, %2
++  %8 = mul i32 %0, %0
++  %9 = add i32 %8, %0
++  %10 = add i32 %9, 3
++  br label %15
++
++11:                                               ; preds = %2
++  %12 = mul i32 %0, %0
++  %13 = add i32 %12, %0
++  %14 = add i32 %13, 3
++  br label %15
++
++15:                                               ; preds = %11, %7, %3
++  %16 = phi i32 [ %14, %11 ], [ %10, %7 ], [ %6, %3 ]
++  ret i32 %16
++}
++
++; if/else with a math function call.
++
++attributes #3 = { nounwind }
++
++; Function Attrs: nounwind
++declare dso_local double @exp(double noundef) #2
++
++; Function Attrs: nounwind uwtable
++; CHECK: @if_else_math_call
++define dso_local i32 @if_else_math_call(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %12
++
++  ; CHECK: mul
++  ; CHECK: call double @exp
++  ; CHECK-NOT: call
++
++3:                                                ; preds = %2, %2
++  %4 = mul i32 %0, %0
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = uitofp i32 %5 to double
++  %7 = uitofp i32 %0 to double
++  %8 = call double @exp(double noundef %7) #3
++  %9 = fadd double %6, %8
++  %10 = fadd double %9, 5.000000e+00
++  %11 = fptoui double %10 to i32
++  br label %30
++
++12:                                               ; preds = %2
++  %13 = icmp ugt i32 %0, 2
++  br i1 %13, label %14, label %22
++
++14:                                               ; preds = %12
++  %15 = mul i32 %0, %0
++  %16 = uitofp i32 %15 to double
++  %17 = uitofp i32 %0 to double
++  %18 = call double @exp(double noundef %17) #3
++  %19 = fadd double %16, %18
++  %20 = fadd double %19, 3.000000e+00
++  %21 = fptoui double %20 to i32
++  br label %30
++
++22:                                               ; preds = %12
++  %23 = mul i32 %0, %0
++  %24 = uitofp i32 %23 to double
++  %25 = uitofp i32 %0 to double
++  %26 = call double @exp(double noundef %25) #3
++  %27 = fadd double %24, %26
++  %28 = fadd double %27, 1.000000e+00
++  %29 = fptoui double %28 to i32
++  br label %30
++
++30:                                               ; preds = %14, %22, %4
++  %31 = phi i32 [ %11, %4 ], [ %21, %14 ], [ %29, %22 ]
++  ret i32 %31
++}
++
++; if/else with multiple redundant expressions in the block.
++
++; Function Attrs: nounwind uwtable
++; CHECK-LABEL: @if_else_multiple_redundant_exprs
++define dso_local i32 @if_else_multiple_redundant_exprs(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %9
++
++  ; There should be only one mul left
++  ; CHECK: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  %8 = add i32 %7, 5
++  br label %14
++
++9:                                                ; preds = %2
++  %10 = mul i32 %0, %0
++  %11 = add i32 %10, %0
++  %12 = add i32 %11, 3
++  %13 = mul i32 %0, %0
++  br label %14
++
++14:                                               ; preds = %9, %4
++  %15 = phi i32 [ %8, %4 ], [ %13, %9 ]
++  %16 = phi i32 [ %7, %4 ], [ %12, %9 ]
++  %17 = add i32 %16, %15
++  ret i32 %17
++}
++
++; CHECK: @not_anticipated_for_loop
++define dso_local i32 @not_anticipated_for_loop(i32 noundef %0, ptr noundef %1) {
++  br label %3
++
++3:                                                ; preds = %8, %2
++  %4 = phi i32 [ undef, %2 ], [ %10, %8 ]
++  %5 = phi i32 [ 0, %2 ], [ %11, %8 ]
++  %6 = icmp ult i32 %5, 10
++  br i1 %6, label %8, label %7
++
++7:                                                ; preds = %3
++  ret i32 %4
++
++  ; CHECK: mul
++  ; CHECK-NEXT: srem
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: br label %{{.*}}, !llvm.loop
++
++8:                                                ; preds = %3
++  %9 = mul nsw i32 %0, %0
++  %10 = srem i32 %9, %0
++  %11 = add i32 %5, 1
++  br label %3, !llvm.loop !3
++}
++
++; Not anticipated expression here.
++; CHECK: @not_anticipated_switch
++define dso_local i32 @not_anticipated_switch(i32 noundef %0, ptr noundef %1) {
++  switch i32 %0, label %8 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %3
++  ]
++  ; CHECK: urem
++  ; CHECK-NEXT: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++
++  ; CHECK: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++3:                                                ; preds = %2, %2, %2
++  %4 = urem i32 %0, 2
++  %5 = mul i32 %4, %4
++  %6 = add i32 %5, %4
++  %7 = add i32 %6, 3
++  br label %12
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 2
++  br label %12
++
++12:                                               ; preds = %8, %3
++  %13 = phi i32 [ %11, %8 ], [ %7, %3 ]
++  ret i32 %13
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_for_loop_invariant_expr.ll b/llvm/test/Transforms/AnticipatedExpressions/test_for_loop_invariant_expr.ll
+new file mode 100644
+index 000000000000..e22989c00357
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_for_loop_invariant_expr.ll
+@@ -0,0 +1,28 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; Generated from a simple for loop.
++
++; CHECK-LABEL: @for_loop_invariant_expr
++define dso_local i32 @for_loop_invariant_expr(i32 noundef %0, ptr noundef %1) #0 {
++  br label %3
++
++3:                                                ; preds = %9, %2
++  %4 = phi i32 [ 0, %2 ], [ %12, %9 ]
++  %5 = icmp ult i32 %4, 10
++  br i1 %5, label %9, label %6
++
++6:                                                ; preds = %3
++  %7 = mul nsw i32 %0, %0
++  %8 = srem i32 %7, %0
++  ret i32 %8
++
++9:                                                ; preds = %3
++  %10 = mul nsw i32 %0, %0
++  %11 = srem i32 %10, %0
++  %12 = add i32 %4, 1
++  br label %3
++  ; CHECK: %[[M:.*]] = mul
++  ; CHECK: srem i32 %[[M]], %{{.*}}
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: srem
++  ; CHECK: ret
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_if_else_math_call.ll b/llvm/test/Transforms/AnticipatedExpressions/test_if_else_math_call.ll
+new file mode 100644
+index 000000000000..9a56a8570611
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_if_else_math_call.ll
+@@ -0,0 +1,59 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; if/else with a math function call.
++
++attributes #3 = { nounwind }
++
++; Function Attrs: nounwind
++declare dso_local double @exp(double noundef) #2
++
++; Function Attrs: nounwind uwtable
++; CHECK: @if_else_math_call
++define dso_local i32 @if_else_math_call(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %12
++
++  ; CHECK: mul
++  ; CHECK: call double @exp
++  ; CHECK-NOT: call
++
++3:                                                ; preds = %2, %2
++  %4 = mul i32 %0, %0
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = uitofp i32 %5 to double
++  %7 = uitofp i32 %0 to double
++  %8 = call double @exp(double noundef %7) #3
++  %9 = fadd double %6, %8
++  %10 = fadd double %9, 5.000000e+00
++  %11 = fptoui double %10 to i32
++  br label %30
++
++12:                                               ; preds = %2
++  %13 = icmp ugt i32 %0, 2
++  br i1 %13, label %14, label %22
++
++14:                                               ; preds = %12
++  %15 = mul i32 %0, %0
++  %16 = uitofp i32 %15 to double
++  %17 = uitofp i32 %0 to double
++  %18 = call double @exp(double noundef %17) #3
++  %19 = fadd double %16, %18
++  %20 = fadd double %19, 3.000000e+00
++  %21 = fptoui double %20 to i32
++  br label %30
++
++22:                                               ; preds = %12
++  %23 = mul i32 %0, %0
++  %24 = uitofp i32 %23 to double
++  %25 = uitofp i32 %0 to double
++  %26 = call double @exp(double noundef %25) #3
++  %27 = fadd double %24, %26
++  %28 = fadd double %27, 1.000000e+00
++  %29 = fptoui double %28 to i32
++  br label %30
++
++30:                                               ; preds = %14, %22, %4
++  %31 = phi i32 [ %11, %4 ], [ %21, %14 ], [ %29, %22 ]
++  ret i32 %31
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_if_else_memory.ll b/llvm/test/Transforms/AnticipatedExpressions/test_if_else_memory.ll
+new file mode 100644
+index 000000000000..2e8d7fb7847b
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_if_else_memory.ll
+@@ -0,0 +1,43 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; No optimization needs to be performed on the memory form (it's okay to not
++; optimize and so we don't check anything here except that the pass shouldn't
++; crash on this.
++; CHECK: if_else_memory
++define dso_local i32 @if_else_memory(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = alloca i32, align 4
++  %4 = alloca i32, align 4
++  %5 = alloca ptr, align 8
++  %6 = alloca i32, align 4
++  store i32 0, ptr %3, align 4
++  store i32 %0, ptr %4, align 4
++  store ptr %1, ptr %5, align 8
++  %7 = load i32, ptr %4, align 4
++  store i32 %7, ptr %6, align 4
++  %8 = load i32, ptr %6, align 4
++  %9 = icmp ugt i32 %8, 2
++  br i1 %9, label %10, label %17
++
++10:                                               ; preds = %2
++  %11 = load i32, ptr %6, align 4
++  %12 = load i32, ptr %6, align 4
++  %13 = mul i32 %11, %12
++  %14 = load i32, ptr %6, align 4
++  %15 = add i32 %13, %14
++  %16 = add i32 %15, 5
++  store i32 %16, ptr %6, align 4
++  br label %24
++
++17:                                               ; preds = %2
++  %18 = load i32, ptr %6, align 4
++  %19 = load i32, ptr %6, align 4
++  %20 = mul i32 %18, %19
++  %21 = load i32, ptr %6, align 4
++  %22 = add i32 %20, %21
++  %23 = add i32 %22, 3
++  store i32 %23, ptr %6, align 4
++  br label %24
++
++24:                                               ; preds = %17, %10
++  %25 = load i32, ptr %6, align 4
++  ret i32 %25
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_if_else_multiple_redundant_exprs.ll b/llvm/test/Transforms/AnticipatedExpressions/test_if_else_multiple_redundant_exprs.ll
+new file mode 100644
+index 000000000000..81e4af38e3e5
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_if_else_multiple_redundant_exprs.ll
+@@ -0,0 +1,34 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; if/else with multiple redundant expressions in the block.
++
++; Function Attrs: nounwind uwtable
++; CHECK-LABEL: @if_else_multiple_redundant_exprs
++define dso_local i32 @if_else_multiple_redundant_exprs(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %9
++
++  ; There should be only one mul left
++  ; CHECK: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  %8 = add i32 %7, 5
++  br label %14
++
++9:                                                ; preds = %2
++  %10 = mul i32 %0, %0
++  %11 = add i32 %10, %0
++  %12 = add i32 %11, 3
++  %13 = mul i32 %0, %0
++  br label %14
++
++14:                                               ; preds = %9, %4
++  %15 = phi i32 [ %8, %4 ], [ %13, %9 ]
++  %16 = phi i32 [ %7, %4 ], [ %12, %9 ]
++  %17 = add i32 %16, %15
++  ret i32 %17
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_for_loop.ll b/llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_for_loop.ll
+new file mode 100644
+index 000000000000..856612f206bb
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_for_loop.ll
+@@ -0,0 +1,25 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; CHECK: @not_anticipated_for_loop
++define dso_local i32 @not_anticipated_for_loop(i32 noundef %0, ptr noundef %1) {
++  br label %3
++
++3:                                                ; preds = %8, %2
++  %4 = phi i32 [ undef, %2 ], [ %10, %8 ]
++  %5 = phi i32 [ 0, %2 ], [ %11, %8 ]
++  %6 = icmp ult i32 %5, 10
++  br i1 %6, label %8, label %7
++
++7:                                                ; preds = %3
++  ret i32 %4
++
++  ; CHECK: mul
++  ; CHECK-NEXT: srem
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: br label %{{.*}}, !llvm.loop
++
++8:                                                ; preds = %3
++  %9 = mul nsw i32 %0, %0
++  %10 = srem i32 %9, %0
++  %11 = add i32 %5, 1
++  br label %3, !llvm.loop !3
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_switch.ll b/llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_switch.ll
+new file mode 100644
+index 000000000000..a08ad6c3d470
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_not_anticipated_switch.ll
+@@ -0,0 +1,36 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; Not anticipated expression here.
++; CHECK: @not_anticipated_switch
++define dso_local i32 @not_anticipated_switch(i32 noundef %0, ptr noundef %1) {
++  switch i32 %0, label %8 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %3
++  ]
++  ; CHECK: urem
++  ; CHECK-NEXT: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++
++  ; CHECK: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++3:                                                ; preds = %2, %2, %2
++  %4 = urem i32 %0, 2
++  %5 = mul i32 %4, %4
++  %6 = add i32 %5, %4
++  %7 = add i32 %6, 3
++  br label %12
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 2
++  br label %12
++
++12:                                               ; preds = %8, %3
++  %13 = phi i32 [ %11, %8 ], [ %7, %3 ]
++  ret i32 %13
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else.ll b/llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else.ll
+new file mode 100644
+index 000000000000..673490cdca13
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else.ll
+@@ -0,0 +1,31 @@
++;RUN: ../../../../build/bin/opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; Generated from an if/else.
++
++; CHECK-LABEL: @simple_if_else
++define dso_local i32 @simple_if_else(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %12
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: %[[M:.*]] = mul i32
++  ; CHECK: add {{.*}} %[[M]]
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 5
++  br label %12
++
++12:                                               ; preds = %8, %4
++  %13 = phi i32 [ %7, %4 ], [ %11, %8 ]
++  ret i32 %13
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else_multiple.ll b/llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else_multiple.ll
+new file mode 100644
+index 000000000000..a00f06f1c484
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_simple_if_else_multiple.ll
+@@ -0,0 +1,42 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; A multiple if/else if/else block with anticipated expressions.
++
++; CHECK-LABEL: @simple_if_else_multiple
++define dso_local i32 @simple_if_else_multiple(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %18
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = icmp ugt i32 %0, 2
++  br i1 %9, label %10, label %14
++
++10:                                               ; preds = %8
++  %11 = mul i32 %0, %0
++  %12 = add i32 %11, %0
++  %13 = add i32 %12, 5
++  br label %18
++
++14:                                               ; preds = %8
++  %15 = mul i32 %0, %0
++  %16 = add i32 %15, %0
++  %17 = add i32 %16, 5
++  br label %18
++
++18:                                               ; preds = %10, %14, %4
++  %19 = phi i32 [ %7, %4 ], [ %13, %10 ], [ %17, %14 ]
++  ret i32 %19
++}
++
+diff --git a/llvm/test/Transforms/AnticipatedExpressions/test_switch.ll b/llvm/test/Transforms/AnticipatedExpressions/test_switch.ll
+new file mode 100644
+index 000000000000..274c9ea76903
+--- /dev/null
++++ b/llvm/test/Transforms/AnticipatedExpressions/test_switch.ll
+@@ -0,0 +1,41 @@
++;RUN: opt -load ../../../../build/lib/LLVMAnticipatedExpressions.so %s -hoist-anticipated-expressions -enable-new-pm=0 -S | FileCheck %s
++; Generated from a switch statement.
++
++; CHECK: @switch
++define dso_local i32 @switch(i32 noundef %0, ptr noundef %1) #0 {
++  switch i32 %0, label %11 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %7
++    i32 3, label %7
++  ]
++
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++3:                                                ; preds = %2, %2
++  %4 = mul i32 %0, %0
++  %5 = add i32 %4, %0
++  %6 = add i32 %5, 3
++  br label %15
++
++7:                                                ; preds = %2, %2
++  %8 = mul i32 %0, %0
++  %9 = add i32 %8, %0
++  %10 = add i32 %9, 3
++  br label %15
++
++11:                                               ; preds = %2
++  %12 = mul i32 %0, %0
++  %13 = add i32 %12, %0
++  %14 = add i32 %13, 3
++  br label %15
++
++15:                                               ; preds = %11, %7, %3
++  %16 = phi i32 [ %14, %11 ], [ %10, %7 ], [ %6, %3 ]
++  ret i32 %16
++}
+\ No newline at end of file
+-- 
+2.17.1
+
